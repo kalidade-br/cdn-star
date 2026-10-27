@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>KALIDADE — CDN Scripts</title>
+<style>
+:root{color-scheme:dark;--bg:#080d12;--line:#243241;--text:#e6edf3;--muted:#8b9aaa;--accent:#39ff88}
+*{box-sizing:border-box}
+body{margin:0;background:radial-gradient(ellipse at top,#10221d 0,#080d12 48%);color:var(--text);font:15px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;min-height:100vh}
+header{border-bottom:1px solid var(--line);background:#080d12e8;position:sticky;top:0;z-index:5;backdrop-filter:blur(12px)}
+.top{max-width:900px;margin:auto;padding:16px 20px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.logo{font-weight:900;letter-spacing:1px;font-size:20px}.logo span{color:var(--accent)}
+.badge{font-size:11px;border:1px solid #236143;color:var(--accent);padding:3px 8px;border-radius:99px}
+main{max-width:900px;margin:24px auto;padding:0 20px 40px}
+h1{font-size:clamp(24px,4vw,34px);margin:0 0 6px}.sub{margin:0;color:var(--muted)}
+.toolbar{display:flex;gap:10px;margin:20px 0 8px;flex-wrap:wrap}
+input{flex:1;min-width:190px;background:#0b1219;border:1px solid var(--line);border-radius:10px;color:var(--text);padding:12px 14px;font:inherit;outline:none}
+input:focus{border-color:var(--accent)}
+button{border:1px solid #315044;background:#12251d;color:var(--accent);padding:9px 13px;border-radius:10px;font:600 13px system-ui,sans-serif;cursor:pointer}
+button:hover{filter:brightness(1.25)}button:disabled{opacity:.5;cursor:wait}
+.status{color:var(--muted);font-size:13px;margin:8px 0 14px}.error{color:#ff8e8e}
+.card{background:#0d141c;border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:10px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.name{font-weight:700;overflow-wrap:anywhere}.path{font-size:12px;color:var(--muted);overflow-wrap:anywhere}
+.actions{display:flex;gap:8px;flex-wrap:wrap}
+.ghost{background:transparent;border-color:var(--line);color:var(--muted)}
+.empty{padding:22px;color:var(--muted);text-align:center}
+</style>
+</head>
+<body>
+<header><div class="top"><div class="logo"><span>◆</span> KALIDADE</div><span class="badge">CDN SCRIPTS</span></div></header>
+<main>
+<h1>Biblioteca de scripts</h1>
+<p class="sub">Toque em “Copiar bookmarklet” e cole na barra de endereço ou salve como favorito.</p>
+<div class="toolbar">
+<input id="search" type="search" placeholder="Pesquisar script..." autocomplete="off" aria-label="Pesquisar">
+<button id="refresh">↻ Atualizar</button>
+</div>
+<div id="status" class="status" role="status">Carregando...</div>
+<div id="list"></div>
+</main>
+<script>
+(() => {
+  const OWNER = "kalidade-br", REPO = "cdn-star";
+  const PROXY = "https://api-kalidade.vercel.app/api/proxy.js?url=";
+  const $ = id => document.getElementById(id);
+  let files = [], branch = "main";
+
+  const getText = async url => {
+    const r = await fetch(PROXY + encodeURIComponent(url));
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.text();
+  };
+
+  // Procura recursivamente o primeiro objeto { tree: { items: [...] } } no JSON embutido.
+  const findTree = o => {
+    if (!o || typeof o !== "object") return null;
+    if (o.tree && Array.isArray(o.tree.items)) return o;
+    for (const k in o) { const f = findTree(o[k]); if (f) return f; }
+    return null;
+  };
+  const findRef = o => {
+    if (!o || typeof o !== "object") return null;
+    if (o.refInfo && o.refInfo.name) return o.refInfo.name;
+    for (const k in o) { const f = findRef(o[k]); if (f) return f; }
+    return null;
+  };
+
+  // Lê uma página do GitHub (via proxy) e devolve os itens + branch.
+  async function readPage(url) {
+    const html = await getText(url);
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const el = doc.querySelector('script[data-target="react-app.embeddedData"]');
+    let items = [], ref = null;
+    if (el) {
+      try {
+        const data = JSON.parse(el.textContent);
+        const t = findTree(data);
+        if (t) items = t.tree.items;
+        ref = findRef(data);
+      } catch (_) {}
+    }
+    if (!items.length) { // plano B: links /blob/ e /tree/ no HTML
+      const base = `/${OWNER}/${REPO}/`;
+      doc.querySelectorAll("a[href]").forEach(a => {
+        const m = a.getAttribute("href").match(new RegExp("^" + base + "(blob|tree)/[^/]+/(.+)$"));
+        if (m) items.push({path: decodeURIComponent(m[2]), contentType: m[1] === "tree" ? "directory" : "file"});
+      });
+    }
+    return {items, ref};
+  }
+
+  async function loadFiles() {
+    $("refresh").disabled = true;
+    $("status").className = "status";
+    $("status").textContent = "Buscando scripts...";
+    try {
+      const root = await readPage(`https://github.com/${OWNER}/${REPO}`);
+      branch = root.ref || "main";
+      const found = new Map();
+      const queue = [...root.items];
+      let guard = 0;
+      while (queue.length && guard++ < 40) {
+        const it = queue.shift();
+        if (it.contentType === "directory") {
+          try {
+            const sub = await readPage(`https://github.com/${OWNER}/${REPO}/tree/${branch}/${it.path}`);
+            sub.items.forEach(x => queue.push(x));
+          } catch (_) {}
+        } else if (/\.js$/i.test(it.path)) found.set(it.path, it.path);
+      }
+      files = [...found.keys()].sort((a, b) => a.localeCompare(b));
+      render();
+      $("status").textContent = files.length + " script(s) encontrado(s).";
+    } catch (e) {
+      $("status").className = "status error";
+      $("status").textContent = "Falha ao carregar: " + e.message + ". Verifique se o proxy permite CORS.";
+      $("list").innerHTML = '<div class="empty">Não foi possível carregar a lista.</div>';
+    } finally { $("refresh").disabled = false; }
+  }
+
+  const cdnUrl = path => `//cdn.jsdelivr.net/gh/${OWNER}/${REPO}@${branch}/${path.split("/").map(encodeURIComponent).join("/")}`;
+  const bookmarklet = path =>
+    `javascript:(function(){var script=document.createElement('script');script.src="${cdnUrl(path)}";document.body.appendChild(script)})();`;
+
+  async function copy(text, btn) {
+    const old = btn.textContent;
+    try { await navigator.clipboard.writeText(text); btn.textContent = "Copiado!"; }
+    catch (_) {
+      const a = document.createElement("textarea"); a.value = text;
+      document.body.appendChild(a); a.select();
+      btn.textContent = document.execCommand("copy") ? "Copiado!" : "Falhou";
+      a.remove();
+    }
+    setTimeout(() => btn.textContent = old, 1200);
+  }
+
+  function render() {
+    const q = $("search").value.trim().toLowerCase();
+    const list = files.filter(p => p.toLowerCase().includes(q));
+    const box = $("list");
+    box.innerHTML = "";
+    if (!list.length) { box.innerHTML = '<div class="empty">Nenhum script encontrado.</div>'; return; }
+    for (const path of list) {
+      const card = document.createElement("div"); card.className = "card";
+      const info = document.createElement("div");
+      const n = document.createElement("div"); n.className = "name"; n.textContent = path.split("/").pop();
+      const p = document.createElement("div"); p.className = "path"; p.textContent = path;
+      info.append(n, p);
+      const act = document.createElement("div"); act.className = "actions";
+      const b1 = document.createElement("button"); b1.textContent = "Copiar bookmarklet";
+      b1.onclick = () => copy(bookmarklet(path), b1);
+      const b2 = document.createElement("button"); b2.className = "ghost"; b2.textContent = "Copiar URL";
+      b2.onclick = () => copy("https:" + cdnUrl(path), b2);
+      act.append(b1, b2);
+      card.append(info, act);
+      box.appendChild(card);
+    }
+  }
+
+  $("search").addEventListener("input", render);
+  $("refresh").addEventListener("click", loadFiles);
+  loadFiles();
+})();
+</script>
+</body>
+</html>
